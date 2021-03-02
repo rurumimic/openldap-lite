@@ -1,0 +1,184 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Package download
+      yum:
+        name:
+          # OpenLDAP Library
+          - openldap
+          - openldap-servers
+          - openldap-clients
+    - name: Set host list
+      copy:
+        dest: /etc/hosts
+        content: |
+          127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+          ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+          192.168.93.101 ldap.example.com ldap
+    - name: Set hostname
+      shell: hostnamectl set-hostname {{ ansible_hostname }}
+    - name: Create .ssh directory
+      file:
+        path: /root/.ssh
+        state: directory
+        owner: root
+        group: root
+        mode: 0700
+    - name: Copy ssh key
+      copy:
+        remote_src: yes
+        src: "/vagrant/insecure/{{ item }}"
+        dest: /root/.ssh
+        owner: root
+        group: root
+        mode: 0600
+      with_items:
+        - id_rsa
+        - authorized_keys
+    - name: Copy ssh pub
+      copy:
+        remote_src: yes
+        src: "/vagrant/insecure/id_rsa.pub"
+        dest: /root/.ssh
+        owner: root
+        group: root
+        mode: 0644
+    - name: Stopped slapd
+      systemd:
+        name: slapd
+        state: stopped
+    # Initializing LDAP settings
+    - name: Remove legacy files
+      file:
+        path: /etc/openldap/slapd.d
+        state: absent
+    - name: Create a slapd directory
+      file:
+        path: /etc/openldap/slapd.d
+        state: directory
+    - name: Delete a ldap data database directory
+      file:
+        path: /var/lib/ldap/data
+        state: absent
+    - name: Delete a ldap accesslog database directory
+      file:
+        path: /var/lib/ldap/accesslog
+        state: absent
+    - name: Create a ldap data database directory
+      file:
+        path: /var/lib/ldap/data
+        state: directory
+        owner: ldap
+        group: ldap
+    - name: Create a ldap accesslog database directory
+      file:
+        path: /var/lib/ldap/accesslog
+        state: directory
+        owner: ldap
+        group: ldap
+    - name: Create a ldap log directory
+      file:
+        path: /var/log/slapd
+        state: directory
+    # Log settings
+    - name: Configure rsyslog
+      copy:
+        dest: /etc/rsyslog.d/slapd.conf
+        content: |
+          $template slapdtmpl,"[%$DAY%-%$MONTH%-%$YEAR% %timegenerated:12:19:date-rfc3339%] %app-name% %syslogseverity-text% %msg%\n"
+          local4.*    /var/log/slapd/slapd.log;slapdtmpl
+      notify:
+        - Restart rsyslog
+    - name: Configure logrotate
+      copy:
+        dest: /etc/logrotate.d/slapd
+        content: |
+          /var/log/slapd/slapd.log {
+            compress
+            copytruncate
+            create 0600 root root
+            daily
+            dateext
+            notifempty
+            maxage 31
+            missingok
+            rotate 31
+          }
+      notify:
+        - Restart logrotate
+    # Certificate settings
+    - name: Remove legacy cert files
+      file:
+        path: /etc/openldap/certs
+        state: absent
+    - name: Create a cert directory
+      file:
+        path: /etc/openldap/certs
+        state: directory
+    - name: Copy cert files
+      copy:
+        remote_src: yes
+        src: "/vagrant/ldap/certs/{{ item }}"
+        dest: /etc/openldap/certs
+        mode: 0644
+      with_items:
+        - rootca.crt
+        - example.com.crt
+    - name: Copy key files
+      copy:
+        remote_src: yes
+        src: "/vagrant/ldap/certs/{{ item }}"
+        dest: /etc/openldap/certs
+        owner: ldap
+        group: ldap
+        mode: 0440
+      with_items:
+        - example.com.key
+    - name: Set client configuration
+      lineinfile:
+        path: /etc/openldap/ldap.conf
+        line: TLS_CACERT /etc/openldap/certs/rootca.crt
+    - name: Copy ldap.conf
+      copy:
+        remote_src: yes
+        src: /vagrant/ldap/conf/ldap.conf
+        dest: /etc/openldap/ldap.conf
+        owner: root
+        group: root
+        mode: 0644
+    # Start LDAP
+    - name: Configure slapd
+      shell: slapadd -v -F /etc/openldap/slapd.d -n 0 -l ldap.ldif
+      args:
+        chdir: /vagrant/ldap/conf # Shared directory
+    - name: Change owner of directory
+      file:
+        path: /etc/openldap/slapd.d
+        state: directory
+        recurse: yes
+        owner: ldap
+        group: ldap
+    - name: Start slapd
+      systemd:
+        name: slapd
+        state: started
+        enabled: yes
+    # LDAP data initialization
+    - name: Add new entries 
+      run_once: true
+      shell: ldapadd -x -w {{ slapd_password }} -D "cn=manager,ou=admins,dc=example,dc=com" -f directories.ldif -Z
+      args:
+        chdir: /vagrant/ldap/conf # Shared directory
+    - name: Retart slapd
+      systemd:
+        name: slapd
+        state: restarted
+  handlers:
+    - name: Restart rsyslog
+      systemd:
+        name: rsyslog
+        state: restarted
+    - name: Restart logrotate
+      become: yes
+      shell: /usr/sbin/logrotate -f /etc/logrotate.conf

@@ -1,0 +1,13 @@
+dn: cn=Keanu Reeves,ou=people,dc=example,dc=com
+objectClass: top
+objectClass: posixAccount
+objectClass: inetOrgPerson
+cn: Keanu Reeves
+uid: keanu
+sn: Reeves
+givenName: Keanu
+uidNumber: 1001
+gidNumber: 500
+homeDirectory: /home/users/keanu
+loginShell: /bin/bash
+userPassword: {CRYPT}$5$706PyWK/ogIfUZRE$.09r.W2OJgAJHkusp3BQjK588BpJB1I5G57mru0FBb6
